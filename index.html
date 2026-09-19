@@ -132,6 +132,7 @@ async function ensureFFmpeg(){
   });
   const baseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm';
   await ffmpeg.load({
+    classWorkerURL: new URL('./ffmpeg-worker.js', window.location.href).href,
     coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
     wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm')
   });
@@ -177,7 +178,7 @@ convertBtn.addEventListener('click', async () => {
     if (filters.length) args.push('-vf', filters.join(','));
 
     const quality = $('#quality').value;
-    args.push('-c:v','libwebp','-compression_level','6');
+    args.push('-c:v','libwebp_anim','-compression_level','6');
     if (quality === 'lossless') args.push('-lossless','1','-quality','100');
     else args.push('-lossless','0','-quality',quality);
     args.push('-loop', $('#loop').checked ? '0' : '1', '-vsync','0', outputName);
