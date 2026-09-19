@@ -23,7 +23,7 @@
 <body>
 <main class="wrap">
   <section class="hero">
-    <div class="pill">v10 · 로컬 처리 · 서버 업로드 없음</div>
+    <div class="pill">v11 · 로컬 처리 · 서버 업로드 없음</div>
     <h1>MP4 → animated WebP</h1>
     <p>해상도와 원본 프레임레이트를 기본으로 유지하고, 추가 화질 저하를 최소화하는 변환기.</p>
   </section>
@@ -74,12 +74,13 @@
       <label class="box">
         <div class="label">가장자리 정리</div>
         <select id="edgeCrop">
+          <option value="auto" selected>자동 감지 (추천)</option>
           <option value="0">없음</option>
-          <option value="2" selected>2px (추천)</option>
-          <option value="4">4px</option>
-          <option value="6">6px</option>
+          <option value="2">사방 2px</option>
+          <option value="4">사방 4px</option>
+          <option value="6">사방 6px</option>
         </select>
-        <div class="help">결과물 가장자리에 생기는 얇은 색 테두리를 사방에서 잘라냅니다. 잘라낸 뒤 다시 확대하지 않습니다.</div>
+        <div class="help" id="cropHelp">파일을 넣으면 가장자리의 얇은 띠를 자동으로 분석합니다. 잘라낸 뒤 다시 확대하지 않습니다.</div>
       </label>
 
       <div class="box">
@@ -196,6 +197,9 @@ const convertBtn = $('#convert'), resetBtn = $('#reset'), download = $('#downloa
 const status = $('#status'), statusText = $('#statusText'), percent = $('#percent'), bar = $('#bar'), log = $('#log');
 const preview = $('#preview'), srcPreview = $('#srcPreview'), outPreview = $('#outPreview');
 let file = null, ffmpeg = null, loaded = false, srcURL = null, outURL = null, srcDuration = 0, ffmpegDuration = 0, inputFPS = 0, inputFrames = 0, expectedFrames = 0, encodeTimer = null, encodeStartedAt = 0;
+let detectedCrop = { top: 0, bottom: 0, left: 0, right: 0 };
+let cropDetectionPromise = Promise.resolve();
+let cropDetectionToken = 0;
 
 const fmt = n => n < 1024*1024 ? `${(n/1024).toFixed(1)} KB` : `${(n/1024/1024).toFixed(1)} MB`;
 function setStatus(text, p=null, cls='') {
@@ -245,12 +249,151 @@ async function ensureFFmpeg(){
   loaded = true;
 }
 
+
+function waitEvent(target, type) {
+  return new Promise((resolve, reject) => {
+    const onOk = () => { cleanup(); resolve(); };
+    const onErr = () => { cleanup(); reject(new Error('영상 프레임을 읽지 못했습니다.')); };
+    const cleanup = () => {
+      target.removeEventListener(type, onOk);
+      target.removeEventListener('error', onErr);
+    };
+    target.addEventListener(type, onOk, { once: true });
+    target.addEventListener('error', onErr, { once: true });
+  });
+}
+
+function median(values) {
+  const a = Array.from(values).filter(Number.isFinite).sort((x,y) => x-y);
+  if (!a.length) return 0;
+  const m = Math.floor(a.length / 2);
+  return a.length % 2 ? a[m] : (a[m-1] + a[m]) / 2;
+}
+
+function detectFlatEdge(scores, maxCrop) {
+  let bestCut = 0, bestStrength = 0;
+  const limit = Math.min(maxCrop, scores.length - 5);
+  for (let cut = 1; cut <= limit; cut++) {
+    const edge = median(scores.slice(0, cut));
+    const inner = median(scores.slice(cut, cut + 4));
+    const localRatio = (scores[cut] + 10) / (scores[cut - 1] + 10);
+    const ratio = (inner + 10) / (edge + 10);
+    const strength = ratio * Math.sqrt(Math.max(localRatio, 0));
+    if (inner - edge > 100 && ratio > 3 && localRatio > 2 && strength > bestStrength) {
+      bestStrength = strength;
+      bestCut = cut;
+    }
+  }
+  return bestCut;
+}
+
+async function detectAutoCrop(sourceFile, token) {
+  const help = $('#cropHelp');
+  if (help) help.textContent = '가장자리 자동 감지 중…';
+  const url = URL.createObjectURL(sourceFile);
+  const video = document.createElement('video');
+  video.muted = true;
+  video.playsInline = true;
+  video.preload = 'auto';
+  video.src = url;
+
+  try {
+    await waitEvent(video, 'loadedmetadata');
+    const w = video.videoWidth, h = video.videoHeight;
+    const duration = Number.isFinite(video.duration) ? video.duration : 0;
+    if (!w || !h) throw new Error('영상 크기를 읽지 못했습니다.');
+
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) throw new Error('Canvas를 만들지 못했습니다.');
+
+    const times = duration > 0.4
+      ? [duration * 0.15, duration * 0.5, duration * 0.85]
+      : [0];
+    const rowSum = new Float64Array(h);
+    const colSum = new Float64Array(w);
+    let samples = 0;
+
+    for (const t of times) {
+      if (token !== cropDetectionToken) return;
+      if (Math.abs(video.currentTime - t) > 0.01) {
+        video.currentTime = Math.max(0, Math.min(t, Math.max(0, duration - 0.01)));
+        await waitEvent(video, 'seeked');
+      }
+      ctx.drawImage(video, 0, 0, w, h);
+      const pixels = ctx.getImageData(0, 0, w, h).data;
+      const stride = 4;
+
+      for (let y = 0; y < h; y++) {
+        let n = 0, sum = 0, sum2 = 0;
+        for (let x = 0; x < w; x += stride) {
+          const i = (y * w + x) * 4;
+          const lum = pixels[i] * 0.299 + pixels[i+1] * 0.587 + pixels[i+2] * 0.114;
+          n++; sum += lum; sum2 += lum * lum;
+        }
+        rowSum[y] += Math.max(0, sum2 / n - (sum / n) ** 2);
+      }
+
+      for (let x = 0; x < w; x++) {
+        let n = 0, sum = 0, sum2 = 0;
+        for (let y = 0; y < h; y += stride) {
+          const i = (y * w + x) * 4;
+          const lum = pixels[i] * 0.299 + pixels[i+1] * 0.587 + pixels[i+2] * 0.114;
+          n++; sum += lum; sum2 += lum * lum;
+        }
+        colSum[x] += Math.max(0, sum2 / n - (sum / n) ** 2);
+      }
+      samples++;
+    }
+
+    if (!samples || token !== cropDetectionToken) return;
+    const rows = Array.from(rowSum, v => v / samples);
+    const cols = Array.from(colSum, v => v / samples);
+    const maxY = Math.min(48, Math.max(8, Math.floor(h * 0.04)));
+    const maxX = Math.min(48, Math.max(8, Math.floor(w * 0.04)));
+
+    const crop = {
+      top: detectFlatEdge(rows, maxY),
+      bottom: detectFlatEdge([...rows].reverse(), maxY),
+      left: detectFlatEdge(cols, maxX),
+      right: detectFlatEdge([...cols].reverse(), maxX)
+    };
+
+    // 비정상적으로 큰 감지는 무시한다.
+    if (crop.top + crop.bottom > h * 0.1) crop.top = crop.bottom = 0;
+    if (crop.left + crop.right > w * 0.1) crop.left = crop.right = 0;
+
+    if (token === cropDetectionToken) {
+      detectedCrop = crop;
+      if (help) {
+        const total = crop.top + crop.bottom + crop.left + crop.right;
+        help.textContent = total
+          ? `자동 감지: 위 ${crop.top}px · 아래 ${crop.bottom}px · 왼쪽 ${crop.left}px · 오른쪽 ${crop.right}px`
+          : '자동 감지: 잘라낼 가장자리 띠를 찾지 못했습니다.';
+      }
+    }
+  } catch (e) {
+    if (token === cropDetectionToken) {
+      detectedCrop = { top: 0, bottom: 0, left: 0, right: 0 };
+      if (help) help.textContent = '자동 감지 실패 — 필요하면 수동 2/4/6px을 선택해 주세요.';
+    }
+  } finally {
+    URL.revokeObjectURL(url);
+    video.removeAttribute('src');
+    video.load();
+  }
+}
+
 function chooseFile(f){
   if (!f) return;
   if (!(f.type === 'video/mp4' || f.name.toLowerCase().endsWith('.mp4'))) { alert('MP4 파일만 넣어줘!'); return; }
   file = f; fileName.textContent = f.name; fileSize.textContent = fmt(f.size); fileInfo.classList.add('show'); convertBtn.disabled = false;
   download.classList.remove('show'); outPreview.removeAttribute('src');
   if (srcURL) URL.revokeObjectURL(srcURL); srcURL = URL.createObjectURL(file); srcPreview.src = srcURL; srcDuration = 0; srcPreview.onloadedmetadata = () => { srcDuration = Number.isFinite(srcPreview.duration) ? srcPreview.duration : 0; }; preview.classList.add('show');
+  const token = ++cropDetectionToken;
+  detectedCrop = { top: 0, bottom: 0, left: 0, right: 0 };
+  cropDetectionPromise = detectAutoCrop(f, token);
 }
 
 drop.addEventListener('click', () => fileInput.click());
@@ -262,6 +405,8 @@ drop.addEventListener('drop', e => chooseFile(e.dataTransfer.files[0]));
 resetBtn.addEventListener('click', () => {
   file = null; fileInput.value=''; fileInfo.classList.remove('show'); convertBtn.disabled=true; status.classList.remove('show'); preview.classList.remove('show'); download.classList.remove('show'); log.textContent=''; bar.style.width='0%';
   if (encodeTimer) clearInterval(encodeTimer); encodeTimer=null; bar.classList.remove('busy'); if(srcURL) URL.revokeObjectURL(srcURL); if(outURL) URL.revokeObjectURL(outURL); srcURL=outURL=null;
+  cropDetectionToken++; detectedCrop = { top:0, bottom:0, left:0, right:0 };
+  if ($('#cropHelp')) $('#cropHelp').textContent = '파일을 넣으면 가장자리의 얇은 띠를 자동으로 분석합니다. 잘라낸 뒤 다시 확대하지 않습니다.';
 });
 
 convertBtn.addEventListener('click', async () => {
@@ -274,6 +419,7 @@ convertBtn.addEventListener('click', async () => {
     try { await ffmpeg.deleteFile(inputName); } catch {}
     try { await ffmpeg.deleteFile(outputName); } catch {}
     await ffmpeg.writeFile(inputName, await fetchFileLocal(file));
+    await cropDetectionPromise;
 
     // ffprobe로 길이, FPS, 프레임 수를 직접 읽어서 진행률의 분모를 만든다.
     ffmpegDuration = 0;
@@ -331,10 +477,18 @@ convertBtn.addEventListener('click', async () => {
     filters.push(`fps=${targetFPS}:round=near`);
     filters.push(`setpts=N/(${targetFPS}*TB)`);
 
-    // 가장자리의 색 번짐/얇은 테두리 제거. 기본값은 사방 2px.
-    const edgeCrop = Number($('#edgeCrop')?.value || 0);
-    if (edgeCrop > 0) {
-      filters.push(`crop=iw-${edgeCrop * 2}:ih-${edgeCrop * 2}:${edgeCrop}:${edgeCrop}`);
+    // 원본에 포함된 가장자리 띠를 자동 또는 수동으로 crop한다.
+    const edgeCropMode = $('#edgeCrop')?.value || 'auto';
+    if (edgeCropMode === 'auto') {
+      const { top, bottom, left, right } = detectedCrop;
+      if (top || bottom || left || right) {
+        filters.push(`crop=iw-${left + right}:ih-${top + bottom}:${left}:${top}`);
+      }
+    } else {
+      const edgeCrop = Number(edgeCropMode || 0);
+      if (edgeCrop > 0) {
+        filters.push(`crop=iw-${edgeCrop * 2}:ih-${edgeCrop * 2}:${edgeCrop}:${edgeCrop}`);
+      }
     }
 
     const scale = $('#scale').value;
