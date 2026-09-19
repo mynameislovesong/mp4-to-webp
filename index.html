@@ -23,7 +23,7 @@
 <body>
 <main class="wrap">
   <section class="hero">
-    <div class="pill">v6 · 로컬 처리 · 서버 업로드 없음</div>
+    <div class="pill">v7 · 로컬 처리 · 서버 업로드 없음</div>
     <h1>MP4 → animated WebP</h1>
     <p>해상도와 원본 프레임레이트를 기본으로 유지하고, 추가 화질 저하를 최소화하는 변환기.</p>
   </section>
@@ -184,7 +184,7 @@ const drop = $('#drop'), fileInput = $('#fileInput'), fileInfo = $('#fileInfo'),
 const convertBtn = $('#convert'), resetBtn = $('#reset'), download = $('#download');
 const status = $('#status'), statusText = $('#statusText'), percent = $('#percent'), bar = $('#bar'), log = $('#log');
 const preview = $('#preview'), srcPreview = $('#srcPreview'), outPreview = $('#outPreview');
-let file = null, ffmpeg = null, loaded = false, srcURL = null, outURL = null, srcDuration = 0, ffmpegDuration = 0, encodeTimer = null, encodeStartedAt = 0;
+let file = null, ffmpeg = null, loaded = false, srcURL = null, outURL = null, srcDuration = 0, ffmpegDuration = 0, inputFPS = 0, inputFrames = 0, expectedFrames = 0, encodeTimer = null, encodeStartedAt = 0;
 
 const fmt = n => n < 1024*1024 ? `${(n/1024).toFixed(1)} KB` : `${(n/1024/1024).toFixed(1)} MB`;
 function setStatus(text, p=null, cls='') {
@@ -199,6 +199,16 @@ async function ensureFFmpeg(){
   ffmpeg = new FFmpegLocal();
   ffmpeg.on('log', ({message}) => {
     addLog(message);
+    const msg = message || '';
+    const fm = /frame=\s*(\d+)/.exec(msg);
+    if (fm && expectedFrames > 0) {
+      const currentFrame = Number(fm[1]);
+      if (Number.isFinite(currentFrame)) {
+        const pct = Math.max(0, Math.min(99, (currentFrame / expectedFrames) * 100));
+        bar.classList.remove('busy');
+        setStatus('WebP 변환 중…', pct);
+      }
+    }
   });
   ffmpeg.on('progress', ({progress, time}) => {
     // ffmpeg.wasm의 time은 마이크로초 단위.
@@ -254,23 +264,47 @@ convertBtn.addEventListener('click', async () => {
     try { await ffmpeg.deleteFile(outputName); } catch {}
     await ffmpeg.writeFile(inputName, await fetchFileLocal(file));
 
-    // 브라우저 video 메타데이터 타이밍에 의존하지 않고 ffprobe로 정확한 길이를 구한다.
+    // ffprobe로 길이, FPS, 프레임 수를 직접 읽어서 진행률의 분모를 만든다.
     ffmpegDuration = 0;
-    try { await ffmpeg.deleteFile('duration.txt'); } catch {}
+    inputFPS = 0;
+    inputFrames = 0;
+    expectedFrames = 0;
+    try { await ffmpeg.deleteFile('probe.txt'); } catch {}
     const probeCode = await ffmpeg.ffprobe([
       '-v','error',
-      '-show_entries','format=duration',
-      '-of','default=noprint_wrappers=1:nokey=1',
+      '-select_streams','v:0',
+      '-show_entries','format=duration:stream=avg_frame_rate,nb_frames',
+      '-of','default=noprint_wrappers=1',
       inputName,
-      '-o','duration.txt'
+      '-o','probe.txt'
     ]);
     if (probeCode === 0) {
-      const durationData = await ffmpeg.readFile('duration.txt', 'utf8');
-      const parsed = parseFloat(String(durationData).trim());
-      if (Number.isFinite(parsed) && parsed > 0) ffmpegDuration = parsed;
+      const probeData = String(await ffmpeg.readFile('probe.txt', 'utf8'));
+      const durationMatch = /duration=([\d.]+)/i.exec(probeData);
+      if (durationMatch) ffmpegDuration = parseFloat(durationMatch[1]);
+
+      const fpsMatch = /avg_frame_rate=(\d+(?:\.\d+)?)\/(\d+(?:\.\d+)?)/i.exec(probeData);
+      if (fpsMatch) {
+        const num = Number(fpsMatch[1]), den = Number(fpsMatch[2]);
+        if (Number.isFinite(num) && Number.isFinite(den) && den > 0) inputFPS = num / den;
+      }
+
+      const framesMatch = /nb_frames=(\d+)/i.exec(probeData);
+      if (framesMatch) inputFrames = Number(framesMatch[1]);
     }
+
     if (!(ffmpegDuration > 0) && srcDuration > 0) ffmpegDuration = srcDuration;
     if (!(ffmpegDuration > 0)) throw new Error('영상 길이를 읽지 못했습니다.');
+
+    const selectedFPS = $('#fps').value;
+    if (selectedFPS !== 'original') {
+      expectedFrames = ffmpegDuration * Number(selectedFPS);
+    } else if (inputFrames > 0) {
+      expectedFrames = inputFrames;
+    } else if (inputFPS > 0) {
+      expectedFrames = ffmpegDuration * inputFPS;
+    }
+    if (!(expectedFrames > 0)) expectedFrames = ffmpegDuration * 30;
 
     const args = ['-i', inputName, '-an'];
     const filters = [];
@@ -283,7 +317,7 @@ convertBtn.addEventListener('click', async () => {
     const quality = $('#quality').value;
     args.push('-c:v','libwebp_anim');
     if (quality === 'lossless') {
-      args.push('-lossless','1','-quality','100','-compression_level','1');
+      args.push('-lossless','1','-quality','75','-compression_level','0');
     } else {
       args.push('-lossless','0','-quality',quality,'-compression_level','4');
     }
