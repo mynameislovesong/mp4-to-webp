@@ -23,7 +23,7 @@
 <body>
 <main class="wrap">
   <section class="hero">
-    <div class="pill">v5 · 로컬 처리 · 서버 업로드 없음</div>
+    <div class="pill">v6 · 로컬 처리 · 서버 업로드 없음</div>
     <h1>MP4 → animated WebP</h1>
     <p>해상도와 원본 프레임레이트를 기본으로 유지하고, 추가 화질 저하를 최소화하는 변환기.</p>
   </section>
@@ -157,6 +157,7 @@ class FFmpegLocal {
   }
   load(config={}){ return this._send(FFMessageType.LOAD, config); }
   exec(args, timeout=-1){ return this._send(FFMessageType.EXEC, {args,timeout}); }
+  ffprobe(args, timeout=-1){ return this._send(FFMessageType.FFPROBE, {args,timeout}); }
   writeFile(path, data){
     const u8 = data instanceof Uint8Array ? data : new Uint8Array(data);
     return this._send(FFMessageType.WRITE_FILE, {path,data:u8}, [u8.buffer]);
@@ -183,7 +184,7 @@ const drop = $('#drop'), fileInput = $('#fileInput'), fileInfo = $('#fileInfo'),
 const convertBtn = $('#convert'), resetBtn = $('#reset'), download = $('#download');
 const status = $('#status'), statusText = $('#statusText'), percent = $('#percent'), bar = $('#bar'), log = $('#log');
 const preview = $('#preview'), srcPreview = $('#srcPreview'), outPreview = $('#outPreview');
-let file = null, ffmpeg = null, loaded = false, srcURL = null, outURL = null, srcDuration = 0, ffmpegDuration = 0, inputFPS = 0, encodeTimer = null, encodeStartedAt = 0;
+let file = null, ffmpeg = null, loaded = false, srcURL = null, outURL = null, srcDuration = 0, ffmpegDuration = 0, encodeTimer = null, encodeStartedAt = 0;
 
 const fmt = n => n < 1024*1024 ? `${(n/1024).toFixed(1)} KB` : `${(n/1024/1024).toFixed(1)} MB`;
 function setStatus(text, p=null, cls='') {
@@ -198,41 +199,17 @@ async function ensureFFmpeg(){
   ffmpeg = new FFmpegLocal();
   ffmpeg.on('log', ({message}) => {
     addLog(message);
-    const msg = message || '';
-
-    const d = /Duration:\s*(\d+):(\d+):([\d.]+)/.exec(msg);
-    if (d) {
-      ffmpegDuration = Number(d[1]) * 3600 + Number(d[2]) * 60 + Number(d[3]);
-    }
-
-    if (!inputFPS) {
-      const fpsMatch = /(?:,|\s)(\d+(?:\.\d+)?)\s*fps(?:,|\s|$)/i.exec(msg);
-      if (fpsMatch) inputFPS = Number(fpsMatch[1]);
-    }
-
-    const duration = ffmpegDuration || srcDuration;
-
-    const tm = /time=(\d+):(\d+):([\d.]+)/.exec(msg);
-    if (tm && duration > 0) {
-      const sec = Number(tm[1]) * 3600 + Number(tm[2]) * 60 + Number(tm[3]);
-      const pct = Math.max(0, Math.min(99, (sec / duration) * 100));
+  });
+  ffmpeg.on('progress', ({progress, time}) => {
+    // ffmpeg.wasm의 time은 마이크로초 단위.
+    if (ffmpegDuration > 0 && Number.isFinite(time) && time >= 0) {
+      const seconds = time / 1_000_000;
+      const pct = Math.max(0, Math.min(99, (seconds / ffmpegDuration) * 100));
       bar.classList.remove('busy');
       setStatus('WebP 변환 중…', pct);
       return;
     }
-
-    const fm = /frame=\s*(\d+)/.exec(msg);
-    if (fm && duration > 0 && inputFPS > 0) {
-      const frame = Number(fm[1]);
-      const totalFrames = duration * inputFPS;
-      if (totalFrames > 0) {
-        const pct = Math.max(0, Math.min(99, (frame / totalFrames) * 100));
-        bar.classList.remove('busy');
-        setStatus('WebP 변환 중…', pct);
-      }
-    }
-  });
-  ffmpeg.on('progress', ({progress}) => {
+    // time을 쓸 수 없을 때만 progress를 보조값으로 사용.
     if (Number.isFinite(progress) && progress > 0 && progress <= 1) {
       bar.classList.remove('busy');
       setStatus('WebP 변환 중…', Math.min(99, progress * 100));
@@ -277,6 +254,24 @@ convertBtn.addEventListener('click', async () => {
     try { await ffmpeg.deleteFile(outputName); } catch {}
     await ffmpeg.writeFile(inputName, await fetchFileLocal(file));
 
+    // 브라우저 video 메타데이터 타이밍에 의존하지 않고 ffprobe로 정확한 길이를 구한다.
+    ffmpegDuration = 0;
+    try { await ffmpeg.deleteFile('duration.txt'); } catch {}
+    const probeCode = await ffmpeg.ffprobe([
+      '-v','error',
+      '-show_entries','format=duration',
+      '-of','default=noprint_wrappers=1:nokey=1',
+      inputName,
+      '-o','duration.txt'
+    ]);
+    if (probeCode === 0) {
+      const durationData = await ffmpeg.readFile('duration.txt', 'utf8');
+      const parsed = parseFloat(String(durationData).trim());
+      if (Number.isFinite(parsed) && parsed > 0) ffmpegDuration = parsed;
+    }
+    if (!(ffmpegDuration > 0) && srcDuration > 0) ffmpegDuration = srcDuration;
+    if (!(ffmpegDuration > 0)) throw new Error('영상 길이를 읽지 못했습니다.');
+
     const args = ['-i', inputName, '-an'];
     const filters = [];
     const scale = $('#scale').value;
@@ -294,7 +289,6 @@ convertBtn.addEventListener('click', async () => {
     }
     args.push('-loop', $('#loop').checked ? '0' : '1', '-vsync','0', outputName);
 
-    ffmpegDuration = 0; inputFPS = 0;
     setStatus('WebP 변환 중…', 0);
     bar.classList.add('busy');
     encodeStartedAt = Date.now();
@@ -303,7 +297,7 @@ convertBtn.addEventListener('click', async () => {
       const s = Math.floor((Date.now() - encodeStartedAt) / 1000);
       if (bar.classList.contains('busy')) {
         statusText.textContent = `WebP 변환 중…`;
-        percent.textContent = '계산 중';
+        if (bar.classList.contains('busy')) percent.textContent = '계산 중';
       }
     }, 1000);
     const code = await ffmpeg.exec(args);
