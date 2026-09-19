@@ -23,7 +23,7 @@
 <body>
 <main class="wrap">
   <section class="hero">
-    <div class="pill">v9 · 로컬 처리 · 서버 업로드 없음</div>
+    <div class="pill">v10 · 로컬 처리 · 서버 업로드 없음</div>
     <h1>MP4 → animated WebP</h1>
     <p>해상도와 원본 프레임레이트를 기본으로 유지하고, 추가 화질 저하를 최소화하는 변환기.</p>
   </section>
@@ -69,6 +69,17 @@
           <option value="15">15 fps</option>
         </select>
         <div class="help">원본보다 높은 fps를 고르면 새 프레임이 생기는 게 아니라 중복 프레임이 들어갈 수 있습니다.</div>
+      </label>
+
+      <label class="box">
+        <div class="label">가장자리 정리</div>
+        <select id="edgeCrop">
+          <option value="0">없음</option>
+          <option value="2" selected>2px (추천)</option>
+          <option value="4">4px</option>
+          <option value="6">6px</option>
+        </select>
+        <div class="help">결과물 가장자리에 생기는 얇은 색 테두리를 사방에서 잘라냅니다. 잘라낸 뒤 다시 확대하지 않습니다.</div>
       </label>
 
       <div class="box">
@@ -319,6 +330,12 @@ convertBtn.addEventListener('click', async () => {
     filters.push('trim=start_frame=1');
     filters.push(`fps=${targetFPS}:round=near`);
     filters.push(`setpts=N/(${targetFPS}*TB)`);
+
+    // 가장자리의 색 번짐/얇은 테두리 제거. 기본값은 사방 2px.
+    const edgeCrop = Number($('#edgeCrop')?.value || 0);
+    if (edgeCrop > 0) {
+      filters.push(`crop=iw-${edgeCrop * 2}:ih-${edgeCrop * 2}:${edgeCrop}:${edgeCrop}`);
+    }
 
     const scale = $('#scale').value;
     if (scale !== 'original') filters.push(`scale='if(gte(iw,ih),min(iw,${scale}),-2)':'if(gte(iw,ih),-2,min(ih,${scale}))':flags=lanczos`);
