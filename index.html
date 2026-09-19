@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MP4 → WebP · 원본보존 변환기</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0d0d12;--card:#17171f;--card2:#20202a;--txt:#f6f4ff;--muted:#aaa6ba;--accent:#d7b7ff;--accent2:#9f78d8;--line:#343340;--ok:#a8e6c1;--bad:#ffb4b4}
+    *{box-sizing:border-box} body{margin:0;font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:radial-gradient(circle at top,#282035 0,#111117 34%,#0b0b10 100%);color:var(--txt);min-height:100vh}
+    .wrap{width:min(880px,calc(100% - 28px));margin:42px auto 70px}.hero{margin-bottom:20px}.hero h1{font-size:clamp(28px,5vw,44px);margin:0 0 8px;letter-spacing:-.04em}.hero p{margin:0;color:var(--muted);line-height:1.65}.pill{display:inline-block;font-size:12px;background:#2c2138;border:1px solid #4c3960;color:#e6d4ff;padding:6px 9px;border-radius:999px;margin-bottom:12px}
+    .card{background:rgba(23,23,31,.94);border:1px solid var(--line);border-radius:22px;padding:20px;box-shadow:0 20px 60px rgba(0,0,0,.25);backdrop-filter:blur(14px)}
+    .drop{border:1.5px dashed #554b63;border-radius:18px;padding:34px 18px;text-align:center;cursor:pointer;transition:.2s;background:#121219}.drop.drag{border-color:var(--accent);background:#1b1523}.drop strong{display:block;font-size:18px;margin-bottom:7px}.drop span{color:var(--muted);font-size:14px}.drop input{display:none}
+    .file{display:none;margin-top:14px;padding:13px 14px;background:var(--card2);border-radius:14px;gap:10px;align-items:center;justify-content:space-between}.file.show{display:flex}.file .name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.file small{color:var(--muted);white-space:nowrap}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:18px}@media(max-width:680px){.grid{grid-template-columns:1fr}}
+    label.box{display:block;background:#121219;border:1px solid #2f2f39;border-radius:16px;padding:14px}.box .label{font-size:13px;color:var(--muted);margin-bottom:8px}.box select,.box input[type=number]{width:100%;background:#20202a;border:1px solid #393846;color:var(--txt);border-radius:11px;padding:10px;font-size:14px}.box .help{font-size:12px;color:#888495;margin-top:7px;line-height:1.45}
+    .row{display:flex;align-items:center;justify-content:space-between;gap:12px}.toggle{display:flex;align-items:center;gap:8px;font-size:14px}.toggle input{accent-color:var(--accent2);width:17px;height:17px}.muted{color:var(--muted)}
+    .actions{margin-top:18px;display:flex;gap:10px;flex-wrap:wrap}button,.download{border:0;border-radius:13px;padding:12px 16px;font-weight:750;font-size:14px;cursor:pointer;text-decoration:none}.primary{background:linear-gradient(135deg,#e6d1ff,#bd92f1);color:#1b1125;flex:1}.primary:disabled{opacity:.45;cursor:not-allowed}.secondary{background:#292833;color:#eee;border:1px solid #3a3946}.download{display:none;background:#b8efcc;color:#102419}.download.show{display:inline-flex;align-items:center;justify-content:center}
+    .status{margin-top:16px;background:#101016;border:1px solid #2d2c35;border-radius:15px;padding:13px 14px;display:none}.status.show{display:block}.statusTop{display:flex;justify-content:space-between;gap:10px;font-size:13px}.statusText{color:#d8d5e0}.percent{color:var(--muted)}.bar{height:8px;background:#272630;border-radius:999px;overflow:hidden;margin-top:10px}.bar>div{height:100%;width:0;background:linear-gradient(90deg,#9d71d5,#dec5ff);transition:width .15s}.log{font:11px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:#7f7b89;margin-top:9px;max-height:72px;overflow:auto;white-space:pre-wrap}
+    .preview{margin-top:18px;display:none}.preview.show{display:grid;grid-template-columns:1fr 1fr;gap:14px}@media(max-width:680px){.preview.show{grid-template-columns:1fr}}.preview figure{margin:0;background:#0d0d12;border-radius:16px;padding:10px;border:1px solid #2d2c35}.preview figcaption{font-size:12px;color:var(--muted);margin-bottom:8px}.preview video,.preview img{width:100%;max-height:390px;object-fit:contain;border-radius:10px;background:#07070a}
+    .note{margin-top:18px;color:#9d99aa;font-size:12px;line-height:1.65}.note b{color:#d3cfdb}.error{color:var(--bad)}.success{color:var(--ok)}
+  </style>
+</head>
+<body>
+<main class="wrap">
+  <section class="hero">
+    <div class="pill">로컬 처리 · 서버 업로드 없음</div>
+    <h1>MP4 → animated WebP</h1>
+    <p>해상도와 원본 프레임레이트를 기본으로 유지하고, 추가 화질 저하를 최소화하는 변환기.</p>
+  </section>
+
+  <section class="card">
+    <div id="drop" class="drop">
+      <input id="fileInput" type="file" accept="video/mp4,.mp4" />
+      <strong>MP4를 여기에 끌어놓기</strong>
+      <span>또는 클릭해서 파일 선택</span>
+    </div>
+    <div id="fileInfo" class="file"><div class="name" id="fileName"></div><small id="fileSize"></small></div>
+
+    <div class="grid">
+      <label class="box">
+        <div class="label">화질 모드</div>
+        <select id="quality">
+          <option value="lossless" selected>원본 보존 · Lossless (추천)</option>
+          <option value="95">초고화질 · Q95</option>
+          <option value="90">고화질 · Q90</option>
+          <option value="85">용량 절약 · Q85</option>
+        </select>
+        <div class="help">Lossless는 디코딩된 MP4 프레임을 WebP로 재압축할 때 추가 손실을 만들지 않습니다. 대신 파일이 커질 수 있어요.</div>
+      </label>
+
+      <label class="box">
+        <div class="label">해상도</div>
+        <select id="scale">
+          <option value="original" selected>원본 그대로</option>
+          <option value="1920">긴 변 최대 1920px</option>
+          <option value="1280">긴 변 최대 1280px</option>
+          <option value="960">긴 변 최대 960px</option>
+        </select>
+        <div class="help">원본 보존을 원하면 그대로 두면 됩니다. 작은 화면 게시용이면 1280도 충분한 경우가 많아요.</div>
+      </label>
+
+      <label class="box">
+        <div class="label">프레임레이트</div>
+        <select id="fps">
+          <option value="original" selected>원본 그대로</option>
+          <option value="60">60 fps</option>
+          <option value="30">30 fps</option>
+          <option value="24">24 fps</option>
+          <option value="15">15 fps</option>
+        </select>
+        <div class="help">원본보다 높은 fps를 고르면 새 프레임이 생기는 게 아니라 중복 프레임이 들어갈 수 있습니다.</div>
+      </label>
+
+      <div class="box">
+        <div class="label">재생 설정</div>
+        <div class="row">
+          <label class="toggle"><input id="loop" type="checkbox" checked /> 무한 반복</label>
+          <span class="muted" style="font-size:12px">DC/웹 게시용</span>
+        </div>
+        <div class="help">WebP 애니메이션 자체에 반복 정보를 넣습니다.</div>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button id="convert" class="primary" disabled>WebP로 변환</button>
+      <button id="reset" class="secondary" type="button">초기화</button>
+      <a id="download" class="download" download>결과 다운로드</a>
+    </div>
+
+    <div id="status" class="status">
+      <div class="statusTop"><span id="statusText" class="statusText">준비 중…</span><span id="percent" class="percent"></span></div>
+      <div class="bar"><div id="bar"></div></div>
+      <div id="log" class="log"></div>
+    </div>
+
+    <div id="preview" class="preview">
+      <figure><figcaption>원본 MP4</figcaption><video id="srcPreview" controls muted playsinline></video></figure>
+      <figure><figcaption>변환 WebP</figcaption><img id="outPreview" alt="변환된 animated WebP 미리보기" /></figure>
+    </div>
+
+    <div class="note">
+      <b>중요:</b> MP4가 이미 손실 압축 포맷이라 WebP로 바꾼다고 원본보다 디테일이 늘어나지는 않습니다. 이 도구의 Lossless 모드는 <b>변환하면서 새로 생기는 손실을 막는 방식</b>입니다. 첫 실행 때 변환 엔진(약 30MB)을 인터넷에서 불러오며, 영상 파일 자체는 브라우저 밖으로 업로드하지 않습니다.
+    </div>
+  </section>
+</main>
+
+<script type="module">
+import { FFmpeg } from 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/esm/index.js';
+import { fetchFile, toBlobURL } from 'https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.2/dist/esm/index.js';
+
+const $ = (q) => document.querySelector(q);
+const drop = $('#drop'), fileInput = $('#fileInput'), fileInfo = $('#fileInfo'), fileName = $('#fileName'), fileSize = $('#fileSize');
+const convertBtn = $('#convert'), resetBtn = $('#reset'), download = $('#download');
+const status = $('#status'), statusText = $('#statusText'), percent = $('#percent'), bar = $('#bar'), log = $('#log');
+const preview = $('#preview'), srcPreview = $('#srcPreview'), outPreview = $('#outPreview');
+let file = null, ffmpeg = null, loaded = false, srcURL = null, outURL = null;
+
+const fmt = n => n < 1024*1024 ? `${(n/1024).toFixed(1)} KB` : `${(n/1024/1024).toFixed(1)} MB`;
+function setStatus(text, p=null, cls='') {
+  status.classList.add('show'); statusText.textContent = text; statusText.className = 'statusText ' + cls;
+  if (p === null) { percent.textContent=''; } else { const v=Math.max(0,Math.min(100,Math.round(p))); percent.textContent=v+'%'; bar.style.width=v+'%'; }
+}
+function addLog(t){ log.textContent = t; log.scrollTop = log.scrollHeight; }
+
+async function ensureFFmpeg(){
+  if (loaded) return;
+  setStatus('변환 엔진 불러오는 중…', 2);
+  ffmpeg = new FFmpeg();
+  ffmpeg.on('log', ({message}) => addLog(message));
+  ffmpeg.on('progress', ({progress}) => {
+    if (Number.isFinite(progress)) setStatus('WebP 변환 중…', 8 + progress * 90);
+  });
+  const baseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm';
+  await ffmpeg.load({
+    coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+    wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm')
+  });
+  loaded = true;
+}
+
+function chooseFile(f){
+  if (!f) return;
+  if (!(f.type === 'video/mp4' || f.name.toLowerCase().endsWith('.mp4'))) { alert('MP4 파일만 넣어줘!'); return; }
+  file = f; fileName.textContent = f.name; fileSize.textContent = fmt(f.size); fileInfo.classList.add('show'); convertBtn.disabled = false;
+  download.classList.remove('show'); outPreview.removeAttribute('src');
+  if (srcURL) URL.revokeObjectURL(srcURL); srcURL = URL.createObjectURL(file); srcPreview.src = srcURL; preview.classList.add('show');
+}
+
+drop.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', e => chooseFile(e.target.files[0]));
+['dragenter','dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('drag'); }));
+['dragleave','drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('drag'); }));
+drop.addEventListener('drop', e => chooseFile(e.dataTransfer.files[0]));
+
+resetBtn.addEventListener('click', () => {
+  file = null; fileInput.value=''; fileInfo.classList.remove('show'); convertBtn.disabled=true; status.classList.remove('show'); preview.classList.remove('show'); download.classList.remove('show'); log.textContent=''; bar.style.width='0%';
+  if(srcURL) URL.revokeObjectURL(srcURL); if(outURL) URL.revokeObjectURL(outURL); srcURL=outURL=null;
+});
+
+convertBtn.addEventListener('click', async () => {
+  if (!file) return;
+  convertBtn.disabled = true; download.classList.remove('show'); log.textContent='';
+  try {
+    await ensureFFmpeg();
+    setStatus('영상 읽는 중…', 5);
+    const inputName = 'input.mp4', outputName = 'output.webp';
+    try { await ffmpeg.deleteFile(inputName); } catch {}
+    try { await ffmpeg.deleteFile(outputName); } catch {}
+    await ffmpeg.writeFile(inputName, await fetchFile(file));
+
+    const args = ['-i', inputName, '-an'];
+    const filters = [];
+    const scale = $('#scale').value;
+    if (scale !== 'original') filters.push(`scale='if(gte(iw,ih),min(iw,${scale}),-2)':'if(gte(iw,ih),-2,min(ih,${scale}))':flags=lanczos`);
+    const fps = $('#fps').value;
+    if (fps !== 'original') filters.push(`fps=${fps}`);
+    if (filters.length) args.push('-vf', filters.join(','));
+
+    const quality = $('#quality').value;
+    args.push('-c:v','libwebp','-compression_level','6');
+    if (quality === 'lossless') args.push('-lossless','1','-quality','100');
+    else args.push('-lossless','0','-quality',quality);
+    args.push('-loop', $('#loop').checked ? '0' : '1', '-vsync','0', outputName);
+
+    setStatus('WebP 변환 중…', 8);
+    await ffmpeg.exec(args);
+    const data = await ffmpeg.readFile(outputName);
+    const blob = new Blob([data.buffer], {type:'image/webp'});
+    if (outURL) URL.revokeObjectURL(outURL); outURL = URL.createObjectURL(blob);
+    outPreview.src = outURL; preview.classList.add('show');
+    download.href = outURL; download.download = file.name.replace(/\.mp4$/i,'') + '.webp';
+    download.textContent = `결과 다운로드 · ${fmt(blob.size)}`; download.classList.add('show');
+    setStatus('완료!', 100, 'success');
+  } catch (e) {
+    console.error(e); setStatus('변환 실패', null, 'error'); addLog(String(e?.message || e));
+    alert('변환에 실패했어. 브라우저 메모리가 부족하거나, 이 브라우저에서 FFmpeg WebAssembly 실행이 막혔을 수 있어. 크롬/엣지 최신 버전에서 다시 열어봐.');
+  } finally { convertBtn.disabled = !file; }
+});
+</script>
+</body>
+</html>
