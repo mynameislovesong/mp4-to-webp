@@ -23,7 +23,7 @@
 <body>
 <main class="wrap">
   <section class="hero">
-    <div class="pill">v4 · 로컬 처리 · 서버 업로드 없음</div>
+    <div class="pill">v5 · 로컬 처리 · 서버 업로드 없음</div>
     <h1>MP4 → animated WebP</h1>
     <p>해상도와 원본 프레임레이트를 기본으로 유지하고, 추가 화질 저하를 최소화하는 변환기.</p>
   </section>
@@ -183,7 +183,7 @@ const drop = $('#drop'), fileInput = $('#fileInput'), fileInfo = $('#fileInfo'),
 const convertBtn = $('#convert'), resetBtn = $('#reset'), download = $('#download');
 const status = $('#status'), statusText = $('#statusText'), percent = $('#percent'), bar = $('#bar'), log = $('#log');
 const preview = $('#preview'), srcPreview = $('#srcPreview'), outPreview = $('#outPreview');
-let file = null, ffmpeg = null, loaded = false, srcURL = null, outURL = null, srcDuration = 0, encodeTimer = null, encodeStartedAt = 0;
+let file = null, ffmpeg = null, loaded = false, srcURL = null, outURL = null, srcDuration = 0, ffmpegDuration = 0, inputFPS = 0, encodeTimer = null, encodeStartedAt = 0;
 
 const fmt = n => n < 1024*1024 ? `${(n/1024).toFixed(1)} KB` : `${(n/1024/1024).toFixed(1)} MB`;
 function setStatus(text, p=null, cls='') {
@@ -198,18 +198,44 @@ async function ensureFFmpeg(){
   ffmpeg = new FFmpegLocal();
   ffmpeg.on('log', ({message}) => {
     addLog(message);
-    const m = /time=(\d+):(\d+):([\d.]+)/.exec(message || '');
-    if (m && srcDuration > 0) {
-      const sec = Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
-      const p = 8 + Math.min(89, (sec / srcDuration) * 89);
+    const msg = message || '';
+
+    const d = /Duration:\s*(\d+):(\d+):([\d.]+)/.exec(msg);
+    if (d) {
+      ffmpegDuration = Number(d[1]) * 3600 + Number(d[2]) * 60 + Number(d[3]);
+    }
+
+    if (!inputFPS) {
+      const fpsMatch = /(?:,|\s)(\d+(?:\.\d+)?)\s*fps(?:,|\s|$)/i.exec(msg);
+      if (fpsMatch) inputFPS = Number(fpsMatch[1]);
+    }
+
+    const duration = ffmpegDuration || srcDuration;
+
+    const tm = /time=(\d+):(\d+):([\d.]+)/.exec(msg);
+    if (tm && duration > 0) {
+      const sec = Number(tm[1]) * 3600 + Number(tm[2]) * 60 + Number(tm[3]);
+      const pct = Math.max(0, Math.min(99, (sec / duration) * 100));
       bar.classList.remove('busy');
-      setStatus('WebP 변환 중…', p);
+      setStatus('WebP 변환 중…', pct);
+      return;
+    }
+
+    const fm = /frame=\s*(\d+)/.exec(msg);
+    if (fm && duration > 0 && inputFPS > 0) {
+      const frame = Number(fm[1]);
+      const totalFrames = duration * inputFPS;
+      if (totalFrames > 0) {
+        const pct = Math.max(0, Math.min(99, (frame / totalFrames) * 100));
+        bar.classList.remove('busy');
+        setStatus('WebP 변환 중…', pct);
+      }
     }
   });
   ffmpeg.on('progress', ({progress}) => {
-    if (Number.isFinite(progress) && progress > 0) {
+    if (Number.isFinite(progress) && progress > 0 && progress <= 1) {
       bar.classList.remove('busy');
-      setStatus('WebP 변환 중…', 8 + Math.min(89, progress * 89));
+      setStatus('WebP 변환 중…', Math.min(99, progress * 100));
     }
   });
   const baseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm';
@@ -260,20 +286,24 @@ convertBtn.addEventListener('click', async () => {
     if (filters.length) args.push('-vf', filters.join(','));
 
     const quality = $('#quality').value;
-    args.push('-c:v','libwebp_anim','-compression_level','4');
-    if (quality === 'lossless') args.push('-lossless','1','-quality','100');
-    else args.push('-lossless','0','-quality',quality);
+    args.push('-c:v','libwebp_anim');
+    if (quality === 'lossless') {
+      args.push('-lossless','1','-quality','100','-compression_level','1');
+    } else {
+      args.push('-lossless','0','-quality',quality,'-compression_level','4');
+    }
     args.push('-loop', $('#loop').checked ? '0' : '1', '-vsync','0', outputName);
 
-    setStatus('WebP 변환 중…', null);
+    ffmpegDuration = 0; inputFPS = 0;
+    setStatus('WebP 변환 중…', 0);
     bar.classList.add('busy');
     encodeStartedAt = Date.now();
     if (encodeTimer) clearInterval(encodeTimer);
     encodeTimer = setInterval(() => {
       const s = Math.floor((Date.now() - encodeStartedAt) / 1000);
       if (bar.classList.contains('busy')) {
-        statusText.textContent = `WebP 변환 중… ${s}초`;
-        percent.textContent = '처리 중';
+        statusText.textContent = `WebP 변환 중…`;
+        percent.textContent = '계산 중';
       }
     }, 1000);
     const code = await ffmpeg.exec(args);
