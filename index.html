@@ -23,7 +23,7 @@
 <body>
 <main class="wrap">
   <section class="hero">
-    <div class="pill">로컬 처리 · 서버 업로드 없음</div>
+    <div class="pill">v3 · 로컬 처리 · 서버 업로드 없음</div>
     <h1>MP4 → animated WebP</h1>
     <p>해상도와 원본 프레임레이트를 기본으로 유지하고, 추가 화질 저하를 최소화하는 변환기.</p>
   </section>
@@ -104,9 +104,79 @@
   </section>
 </main>
 
-<script type="module">
-import { FFmpeg } from 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/esm/index.js';
-import { fetchFile, toBlobURL } from 'https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.2/dist/esm/index.js';
+<script>
+const FFMessageType = {
+  LOAD:"LOAD", EXEC:"EXEC", FFPROBE:"FFPROBE",
+  WRITE_FILE:"WRITE_FILE", READ_FILE:"READ_FILE", DELETE_FILE:"DELETE_FILE",
+  RENAME:"RENAME", CREATE_DIR:"CREATE_DIR", LIST_DIR:"LIST_DIR",
+  DELETE_DIR:"DELETE_DIR", ERROR:"ERROR", DOWNLOAD:"DOWNLOAD",
+  PROGRESS:"PROGRESS", LOG:"LOG", MOUNT:"MOUNT", UNMOUNT:"UNMOUNT"
+};
+
+class FFmpegLocal {
+  constructor(){
+    this.worker = null;
+    this.seq = 0;
+    this.pending = new Map();
+    this.listeners = { log: [], progress: [] };
+  }
+  on(type, cb){ if (this.listeners[type]) this.listeners[type].push(cb); }
+  _ensureWorker(){
+    if (this.worker) return;
+    const workerURL = new URL('./ffmpeg-worker.js?v=5', window.location.href).href;
+    this.worker = new Worker(workerURL, { type: 'module' });
+    this.worker.onmessage = ({data}) => {
+      const {id, type, data: payload} = data || {};
+      if (type === FFMessageType.LOG) {
+        this.listeners.log.forEach(fn => fn(payload));
+        return;
+      }
+      if (type === FFMessageType.PROGRESS) {
+        this.listeners.progress.forEach(fn => fn(payload));
+        return;
+      }
+      const p = this.pending.get(id);
+      if (!p) return;
+      this.pending.delete(id);
+      if (type === FFMessageType.ERROR) p.reject(new Error(String(payload)));
+      else p.resolve(payload);
+    };
+    this.worker.onerror = (e) => {
+      const err = new Error(e.message || 'FFmpeg worker error');
+      for (const p of this.pending.values()) p.reject(err);
+      this.pending.clear();
+    };
+  }
+  _send(type, data, transfer=[]){
+    this._ensureWorker();
+    const id = ++this.seq;
+    return new Promise((resolve,reject) => {
+      this.pending.set(id,{resolve,reject});
+      this.worker.postMessage({id,type,data}, transfer);
+    });
+  }
+  load(config={}){ return this._send(FFMessageType.LOAD, config); }
+  exec(args, timeout=-1){ return this._send(FFMessageType.EXEC, {args,timeout}); }
+  writeFile(path, data){
+    const u8 = data instanceof Uint8Array ? data : new Uint8Array(data);
+    return this._send(FFMessageType.WRITE_FILE, {path,data:u8}, [u8.buffer]);
+  }
+  readFile(path, encoding='binary'){ return this._send(FFMessageType.READ_FILE, {path,encoding}); }
+  deleteFile(path){ return this._send(FFMessageType.DELETE_FILE, {path}); }
+}
+
+async function fetchFileLocal(input){
+  if (input instanceof Blob) return new Uint8Array(await input.arrayBuffer());
+  const r = await fetch(input);
+  if (!r.ok) throw new Error(`파일을 불러오지 못했습니다: ${r.status}`);
+  return new Uint8Array(await r.arrayBuffer());
+}
+async function toBlobURLLocal(url, mime){
+  const r = await fetch(url, { cache: 'force-cache' });
+  if (!r.ok) throw new Error(`FFmpeg 엔진 다운로드 실패: ${r.status}`);
+  const buf = await r.arrayBuffer();
+  return URL.createObjectURL(new Blob([buf], {type:mime}));
+}
 
 const $ = (q) => document.querySelector(q);
 const drop = $('#drop'), fileInput = $('#fileInput'), fileInfo = $('#fileInfo'), fileName = $('#fileName'), fileSize = $('#fileSize');
@@ -125,17 +195,17 @@ function addLog(t){ log.textContent = t; log.scrollTop = log.scrollHeight; }
 async function ensureFFmpeg(){
   if (loaded) return;
   setStatus('변환 엔진 불러오는 중…', 2);
-  ffmpeg = new FFmpeg();
+  ffmpeg = new FFmpegLocal();
   ffmpeg.on('log', ({message}) => addLog(message));
   ffmpeg.on('progress', ({progress}) => {
     if (Number.isFinite(progress)) setStatus('WebP 변환 중…', 8 + progress * 90);
   });
   const baseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm';
-  await ffmpeg.load({
-    classWorkerURL: new URL('./ffmpeg-worker.js', window.location.href).href,
-    coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-    wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm')
-  });
+  const [coreURL, wasmURL] = await Promise.all([
+    toBlobURLLocal(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+    toBlobURLLocal(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm')
+  ]);
+  await ffmpeg.load({ coreURL, wasmURL });
   loaded = true;
 }
 
@@ -167,7 +237,7 @@ convertBtn.addEventListener('click', async () => {
     const inputName = 'input.mp4', outputName = 'output.webp';
     try { await ffmpeg.deleteFile(inputName); } catch {}
     try { await ffmpeg.deleteFile(outputName); } catch {}
-    await ffmpeg.writeFile(inputName, await fetchFile(file));
+    await ffmpeg.writeFile(inputName, await fetchFileLocal(file));
 
     const args = ['-i', inputName, '-an'];
     const filters = [];
@@ -184,7 +254,8 @@ convertBtn.addEventListener('click', async () => {
     args.push('-loop', $('#loop').checked ? '0' : '1', '-vsync','0', outputName);
 
     setStatus('WebP 변환 중…', 8);
-    await ffmpeg.exec(args);
+    const code = await ffmpeg.exec(args);
+    if (code !== 0) throw new Error(`FFmpeg 종료 코드 ${code}`);
     const data = await ffmpeg.readFile(outputName);
     const blob = new Blob([data.buffer], {type:'image/webp'});
     if (outURL) URL.revokeObjectURL(outURL); outURL = URL.createObjectURL(blob);
@@ -193,8 +264,8 @@ convertBtn.addEventListener('click', async () => {
     download.textContent = `결과 다운로드 · ${fmt(blob.size)}`; download.classList.add('show');
     setStatus('완료!', 100, 'success');
   } catch (e) {
-    console.error(e); setStatus('변환 실패', null, 'error'); addLog(String(e?.message || e));
-    alert('변환에 실패했어. 브라우저 메모리가 부족하거나, 이 브라우저에서 FFmpeg WebAssembly 실행이 막혔을 수 있어. 크롬/엣지 최신 버전에서 다시 열어봐.');
+    console.error(e); setStatus('변환 실패', null, 'error'); addLog(String(e?.stack || e?.message || e));
+    alert('변환에 실패했어. 아래 오류 로그를 복사해서 보내주면 바로 잡을게.');
   } finally { convertBtn.disabled = !file; }
 });
 </script>
