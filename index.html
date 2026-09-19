@@ -33,7 +33,7 @@
 <body>
 <main class="wrap">
   <section class="hero">
-    <div class="pill">v13 · 로컬 처리 · 서버 업로드 없음</div>
+    <div class="pill">v14 · 로컬 처리 · 서버 업로드 없음</div>
     <h1>MP4 → animated WebP</h1>
     <p>해상도와 원본 프레임레이트를 기본으로 유지하고, 추가 화질 저하를 최소화하는 변환기.</p>
   </section>
@@ -440,30 +440,32 @@ async function convertOne(sourceFile, index) {
 
   await ffmpeg.writeFile(inputName, await fetchFileLocal(sourceFile));
 
+  // 배치 변환에서는 duration이 필요하지 않다.
+  // ffprobe가 일부 MP4 메타데이터를 못 읽어도 변환 자체는 계속 진행한다.
   let inputFPS = 0;
-  let duration = 0;
-  const probeCode = await ffmpeg.ffprobe([
-    '-v','error',
-    '-select_streams','v:0',
-    '-show_entries','format=duration:stream=avg_frame_rate',
-    '-of','default=noprint_wrappers=1',
-    inputName,
-    '-o',probeName
-  ]);
+  try {
+    const probeCode = await ffmpeg.ffprobe([
+      '-v','error',
+      '-select_streams','v:0',
+      '-show_entries','stream=avg_frame_rate',
+      '-of','default=noprint_wrappers=1',
+      inputName,
+      '-o',probeName
+    ]);
 
-  if (probeCode === 0) {
-    const probeData = String(await ffmpeg.readFile(probeName, 'utf8'));
-    const durationMatch = /duration=([\d.]+)/i.exec(probeData);
-    if (durationMatch) duration = parseFloat(durationMatch[1]);
-
-    const fpsMatch = /avg_frame_rate=(\d+(?:\.\d+)?)\/(\d+(?:\.\d+)?)/i.exec(probeData);
-    if (fpsMatch) {
-      const num = Number(fpsMatch[1]), den = Number(fpsMatch[2]);
-      if (Number.isFinite(num) && Number.isFinite(den) && den > 0) inputFPS = num / den;
+    if (probeCode === 0) {
+      try {
+        const probeData = String(await ffmpeg.readFile(probeName, 'utf8'));
+        const fpsMatch = /avg_frame_rate=(\d+(?:\.\d+)?)\/(\d+(?:\.\d+)?)/i.exec(probeData);
+        if (fpsMatch) {
+          const num = Number(fpsMatch[1]), den = Number(fpsMatch[2]);
+          if (Number.isFinite(num) && Number.isFinite(den) && den > 0) inputFPS = num / den;
+        }
+      } catch {}
     }
+  } catch {
+    inputFPS = 0;
   }
-
-  if (!(duration > 0)) throw new Error(`${sourceFile.name}: 영상 길이를 읽지 못했습니다.`);
 
   const args = ['-i', inputName, '-an'];
   const filters = [];
