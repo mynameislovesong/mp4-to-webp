@@ -16,14 +16,14 @@
     .row{display:flex;align-items:center;justify-content:space-between;gap:12px}.toggle{display:flex;align-items:center;gap:8px;font-size:14px}.toggle input{accent-color:var(--accent2);width:17px;height:17px}.muted{color:var(--muted)}
     .actions{margin-top:18px;display:flex;gap:10px;flex-wrap:wrap}button,.download{border:0;border-radius:13px;padding:12px 16px;font-weight:750;font-size:14px;cursor:pointer;text-decoration:none}.primary{background:linear-gradient(135deg,#e6d1ff,#bd92f1);color:#1b1125;flex:1}.primary:disabled{opacity:.45;cursor:not-allowed}.secondary{background:#292833;color:#eee;border:1px solid #3a3946}.download{display:none;background:#b8efcc;color:#102419}.download.show{display:inline-flex;align-items:center;justify-content:center}
     .status{margin-top:16px;background:#101016;border:1px solid #2d2c35;border-radius:15px;padding:13px 14px;display:none}.status.show{display:block}.statusTop{display:flex;justify-content:space-between;gap:10px;font-size:13px}.statusText{color:#d8d5e0}.percent{color:var(--muted)}.bar{height:8px;background:#272630;border-radius:999px;overflow:hidden;margin-top:10px}.bar>div{height:100%;width:0;background:linear-gradient(90deg,#9d71d5,#dec5ff);transition:width .15s}.bar>div.busy{width:35%!important;animation:busybar 1.15s ease-in-out infinite}@keyframes busybar{0%{transform:translateX(-120%)}50%{transform:translateX(110%)}100%{transform:translateX(320%)}}.log{font:11px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:#7f7b89;margin-top:9px;max-height:72px;overflow:auto;white-space:pre-wrap}
-    .preview{margin-top:18px;display:none}.preview.show{display:grid;grid-template-columns:1fr 1fr;gap:14px}@media(max-width:680px){.preview.show{grid-template-columns:1fr}}.preview figure{margin:0;background:transparent;padding:0;border:0}.preview figcaption{font-size:12px;color:var(--muted);margin-bottom:8px}.preview video,.preview img{width:100%;max-height:390px;object-fit:contain;border-radius:0;background:transparent}
+    .preview{margin-top:18px;display:none}.preview.show{display:grid;grid-template-columns:1fr 1fr;gap:14px}@media(max-width:680px){.preview.show{grid-template-columns:1fr}}.preview figure{margin:0;background:transparent;padding:0;border:0}.preview figcaption{font-size:12px;color:var(--muted);margin-bottom:8px}.preview video,.preview img{display:block;width:auto;max-width:100%;height:auto;max-height:none;object-fit:unset;border:0;border-radius:0;background:transparent;margin:0 auto}
     .note{margin-top:18px;color:#9d99aa;font-size:12px;line-height:1.65}.note b{color:#d3cfdb}.error{color:var(--bad)}.success{color:var(--ok)}
   </style>
 </head>
 <body>
 <main class="wrap">
   <section class="hero">
-    <div class="pill">v8 · 로컬 처리 · 서버 업로드 없음</div>
+    <div class="pill">v9 · 로컬 처리 · 서버 업로드 없음</div>
     <h1>MP4 → animated WebP</h1>
     <p>해상도와 원본 프레임레이트를 기본으로 유지하고, 추가 화질 저하를 최소화하는 변환기.</p>
   </section>
@@ -307,12 +307,23 @@ convertBtn.addEventListener('click', async () => {
     if (!(expectedFrames > 0)) expectedFrames = ffmpegDuration * 30;
 
     const args = ['-i', inputName, '-an'];
-    const filters = ['setpts=PTS-STARTPTS'];
+    const filters = [];
+
+    // animated WebP에서 VFR/첫 프레임 timestamp 꼬임을 피하기 위해
+    // 첫 프레임 1장을 버리고 CFR 타임라인을 새로 만든다.
+    const fpsChoice = $('#fps').value;
+    const targetFPS = fpsChoice !== 'original'
+      ? Number(fpsChoice)
+      : (inputFPS > 0 ? Math.min(60, Math.max(1, inputFPS)) : 30);
+
+    filters.push('trim=start_frame=1');
+    filters.push(`fps=${targetFPS}:round=near`);
+    filters.push(`setpts=N/(${targetFPS}*TB)`);
+
     const scale = $('#scale').value;
     if (scale !== 'original') filters.push(`scale='if(gte(iw,ih),min(iw,${scale}),-2)':'if(gte(iw,ih),-2,min(ih,${scale}))':flags=lanczos`);
-    const fps = $('#fps').value;
-    if (fps !== 'original') filters.push(`fps=${fps}`);
-    if (filters.length) args.push('-vf', filters.join(','));
+
+    args.push('-vf', filters.join(','));
 
     const quality = $('#quality').value;
     args.push('-c:v','libwebp_anim');
@@ -321,7 +332,7 @@ convertBtn.addEventListener('click', async () => {
     } else {
       args.push('-lossless','0','-quality',quality,'-compression_level','4');
     }
-    args.push('-loop', $('#loop').checked ? '0' : '1', '-vsync','0', outputName);
+    args.push('-loop', $('#loop').checked ? '0' : '1', outputName);
 
     setStatus('WebP 변환 중…', 0);
     bar.classList.add('busy');
