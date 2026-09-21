@@ -33,7 +33,7 @@
 <body>
 <main class="wrap">
   <section class="hero">
-    <div class="pill">v14 · 로컬 처리 · 서버 업로드 없음</div>
+    <div class="pill">v15 · 로컬 처리 · 서버 업로드 없음</div>
     <h1>MP4 → animated WebP</h1>
     <p>해상도와 원본 프레임레이트를 기본으로 유지하고, 추가 화질 저하를 최소화하는 변환기.</p>
   </section>
@@ -100,6 +100,15 @@
           <span class="muted" style="font-size:12px">DC/웹 게시용</span>
         </div>
         <div class="help">WebP 애니메이션 자체에 반복 정보를 넣습니다.</div>
+      </div>
+
+      <div class="box">
+        <div class="label">모바일 최적화</div>
+        <div class="row">
+          <label class="toggle"><input id="iphoneOptimize" type="checkbox" /> 아이폰 최적화 모드</label>
+          <span class="muted" style="font-size:12px">iOS/DC 앱용</span>
+        </div>
+        <div class="help">이전 프레임과 완전히 같은 16px 블록은 다시 저장하지 않고 변경된 영역 위주로 인코딩합니다. 아이폰에서 animated WebP 재생이 끊길 때 사용해 보세요.</div>
       </div>
     </div>
 
@@ -501,6 +510,13 @@ async function convertOne(sourceFile, index) {
 
   const quality = $('#quality').value;
   args.push('-c:v','libwebp_anim','-lossless','0','-quality',quality,'-compression_level','4');
+
+  if ($('#iphoneOptimize')?.checked) {
+    // Conditional replenishment: 이전 프레임과 완전히 동일한 16px 블록을
+    // 투명 영역으로 처리해 변경된 부분 위주로 저장한다.
+    args.push('-cr_threshold','1','-cr_size','16');
+  }
+
   args.push('-loop', $('#loop').checked ? '0' : '1', outputName);
 
   const code = await ffmpeg.exec(args);
